@@ -1,0 +1,15 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { --lemon: #D4FF3A; --ink: #0B0F05; }
+html, body { background: #FFFFFF; color: var(--ink); }
+body { font-family: var(--f-body); -webkit-font-smoothing: antialiased; }
+::selection { background: var(--lemon); color: var(--ink); }
+
+/* Buyer mode: the interface frosts over */
+.private-mode { background: linear-gradient(180deg, #F3F5EC 0%, #E9EDE0 100%); }
+.redact { position: relative; display: inline-block; border-radius: 6px; background: var(--ink); color: transparent; user-select: none; transition: all .25s ease; }
+.redact:hover, .redact:focus { background: transparent; color: inherit; }
+.grain::after { content: ''; position: absolute; inset: 0; pointer-events: none; opacity: .06; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence baseFrequency='.9'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)'/%3E%3C/svg%3E"); }
+.no-scrollbar::-webkit-scrollbar { display: none; } .no-scrollbar { scrollbar-width: none; }
