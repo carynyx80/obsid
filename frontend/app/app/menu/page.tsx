@@ -16,6 +16,7 @@ const ALL: (Item & { only?: 'host' | 'buyer' })[] = [
   { href: '/app/presale', title: 'Presales', kicker: 'Early rounds', blurb: 'Get in first, with vesting built in.', tone: 'chalk', glyph: '◒' },
   { href: '/app/ipo', title: 'IPO', kicker: 'Tokenized equity', blurb: 'Real shares, gated by KYC and jurisdiction.', tone: 'frost', tag: 'Coming soon', glyph: '◓' },
   { href: '/app/apply', title: 'Apply', kicker: 'Launch with Obsid', blurb: 'Submit your project to host a sale.', tone: 'lemon', only: 'host', glyph: '✚' },
+  { href: '/app/manage', title: 'Manage Sales', kicker: 'Host console', blurb: 'Fund your sale, withdraw BNB, reclaim unsold tokens.', tone: 'ink', only: 'host', glyph: '◆' },
   { href: '/app/profile', title: 'My Profile', kicker: 'Your public face', blurb: 'Team, links, banner and sale history.', tone: 'chalk', only: 'host', glyph: '☀' },
   { href: '/app/dashboard', title: 'My Private Dashboard', kicker: 'For your eyes only', blurb: 'Your sealed bids, reveals and allocations.', tone: 'ink', only: 'buyer', glyph: '◈' },
   { href: '/app/claim', title: 'Claim and Vesting', kicker: 'Collect tokens', blurb: 'Claim unlocked tokens on schedule.', tone: 'lemon', glyph: '◎' },
