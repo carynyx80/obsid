@@ -184,6 +184,7 @@ export default function StakePanel() {
 
   return (
     <AppShell>
+      <div className="mx-auto max-w-7xl px-4 pb-24 sm:px-6">
       <PageHead
         kicker="Guaranteed access"
         title={<>Stake $OBSID.<br />Get into every sale.</>}
@@ -294,6 +295,7 @@ export default function StakePanel() {
       <p className="mt-12 max-w-2xl font-body text-xs text-ink-mute">
         Staking gives you the right to bid in every staker gated sale on Obsid. It does not guarantee an allocation: tokens go to bids that clear the sale price. Staked $OBSID stays yours and can be withdrawn after the cooldown.
       </p>
+    </div>
     </AppShell>
   );
 }
