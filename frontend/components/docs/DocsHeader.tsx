@@ -2,14 +2,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useState } from 'react';
-
-function Mark() {
-  return (
-    <span className="relative inline-flex h-8 w-8 items-center justify-center rounded-full bg-ink">
-      <span className="h-3 w-3 rounded-full bg-lemon" />
-    </span>
-  );
-}
+import Logo from '@/components/ui/Logo';
 
 const links = [
   { href: '/whitepaper', label: 'Whitepaper' },
@@ -22,10 +15,7 @@ export default function DocsHeader() {
   return (
     <header className="sticky top-0 z-40 border-b border-frost bg-paper/85 backdrop-blur-md">
       <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
-        <Link href="/" className="flex items-center gap-2.5" aria-label="Obsid home">
-          <Mark />
-          <span className="font-display text-lg font-semibold tracking-tight">obsid</span>
-        </Link>
+        <Logo size="sm" />
         <nav className="hidden items-center gap-1 md:flex">
           {links.map((l) => (
             <Link

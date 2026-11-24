@@ -11,6 +11,7 @@ import VestingVaultJson from '@/lib/contracts/VestingVault.json';
 import ParticipationBadgeJson from '@/lib/contracts/ParticipationBadge.json';
 import AllocationMarketJson from '@/lib/contracts/AllocationMarket.json';
 import LiquidityLockerJson from '@/lib/contracts/LiquidityLocker.json';
+import ObsidStakingJson from '@/lib/contracts/ObsidStaking.json';
 import { API } from '@/lib/api';
 
 export const CHAIN_ID = bsc.id; // 56, BNB Smart Chain mainnet
@@ -25,6 +26,7 @@ export const VESTING_VAULT_ABI = VestingVaultJson.abi as Abi;
 export const PARTICIPATION_BADGE_ABI = ParticipationBadgeJson.abi as Abi;
 export const ALLOCATION_MARKET_ABI = AllocationMarketJson.abi as Abi;
 export const LIQUIDITY_LOCKER_ABI = LiquidityLockerJson.abi as Abi;
+export const OBSID_STAKING_ABI = ObsidStakingJson.abi as Abi;
 export { erc20Abi };
 
 export const ARTIFACTS = {
@@ -35,12 +37,13 @@ export const ARTIFACTS = {
   SealedBidSale: SealedBidSaleJson,
   MilestoneEscrow: MilestoneEscrowJson,
   SaleFactory: SaleFactoryJson,
+  ObsidStaking: ObsidStakingJson,
 } as const;
 
 /* ---------------------------------------------------------------- registry */
 
 export const CONTRACT_NAMES = [
-  'SaleFactory', 'SealedBidSaleImpl', 'MilestoneEscrowImpl', 'VestingVault', 'ParticipationBadge', 'AllocationMarket', 'LiquidityLocker',
+  'SaleFactory', 'SealedBidSaleImpl', 'MilestoneEscrowImpl', 'VestingVault', 'ParticipationBadge', 'AllocationMarket', 'LiquidityLocker', 'ObsidStaking',
 ] as const;
 export type ContractName = (typeof CONTRACT_NAMES)[number];
 export type ContractRegistry = Partial<Record<ContractName, Address>>;
@@ -57,6 +60,7 @@ export const ENV_CONTRACTS: ContractRegistry = {
   ParticipationBadge: envAddr(process.env.NEXT_PUBLIC_PARTICIPATION_BADGE),
   AllocationMarket: envAddr(process.env.NEXT_PUBLIC_ALLOCATION_MARKET),
   LiquidityLocker: envAddr(process.env.NEXT_PUBLIC_LIQUIDITY_LOCKER),
+  ObsidStaking: envAddr(process.env.NEXT_PUBLIC_OBSID_STAKING),
 };
 
 export async function fetchContracts(): Promise<ContractRegistry> {

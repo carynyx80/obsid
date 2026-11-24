@@ -19,6 +19,7 @@ const ALL: (Item & { only?: 'host' | 'buyer' })[] = [
   { href: '/app/manage', title: 'Manage Sales', kicker: 'Host console', blurb: 'Fund your sale, withdraw BNB, reclaim unsold tokens.', tone: 'ink', only: 'host', glyph: '◆' },
   { href: '/app/profile', title: 'My Profile', kicker: 'Your public face', blurb: 'Team, links, banner and sale history.', tone: 'chalk', only: 'host', glyph: '☀' },
   { href: '/app/dashboard', title: 'My Private Dashboard', kicker: 'For your eyes only', blurb: 'Your sealed bids, reveals and allocations.', tone: 'ink', only: 'buyer', glyph: '◈' },
+  { href: '/app/stake', title: 'Stake $OBSID', kicker: 'Guaranteed access', blurb: 'Stake to get into every sale.', tone: 'lemon', glyph: '◉' },
   { href: '/app/claim', title: 'Claim and Vesting', kicker: 'Collect tokens', blurb: 'Claim unlocked tokens on schedule.', tone: 'lemon', glyph: '◎' },
   { href: '/app/trade', title: 'Allocation Trading', kicker: 'Peer to peer', blurb: 'Move positions without broadcasting size.', tone: 'frost', glyph: '⇄' },
   { href: '/whitepaper', title: 'Whitepaper', kicker: 'The mechanism', blurb: 'Math, contracts and guarantees.', tone: 'chalk', glyph: '¶' },

@@ -119,6 +119,7 @@ export const CONTRACT_NAMES = [
   'ParticipationBadge',
   'AllocationMarket',
   'LiquidityLocker',
+  'ObsidStaking',
 ] as const;
 export type ContractName = (typeof CONTRACT_NAMES)[number];
 /** EIP-55 checksummed addresses keyed by contract name. Missing keys are unset. */

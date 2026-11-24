@@ -449,6 +449,17 @@ describe('contract config registry', () => {
     expect(await store.getContracts()).toEqual(replaced.body.contracts);
   });
 
+  it('accepts ObsidStaking in the registry with merge', async () => {
+    await request(app).put('/api/admin/config').set(await authHeaders(app, admin)).send({ contracts: { SaleFactory: A } });
+    const r = await request(app)
+      .put('/api/admin/config')
+      .set(await authHeaders(app, admin))
+      .send({ merge: true, contracts: { ObsidStaking: B } });
+    expect(r.status).toBe(200);
+    expect(r.body.contracts).toEqual({ SaleFactory: getAddress(A), ObsidStaking: getAddress(B) });
+    expect((await request(app).get('/api/config')).body.contracts.ObsidStaking).toBe(getAddress(B));
+  });
+
   it('rejects invalid, zero and unknown addresses', async () => {
     for (const contracts of [
       { SaleFactory: '0x123' },

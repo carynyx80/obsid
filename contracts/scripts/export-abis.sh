@@ -15,6 +15,7 @@ CONTRACTS=(
   SealedBidSale
   MilestoneEscrow
   SaleFactory
+  ObsidStaking
 )
 
 cd "$HERE"

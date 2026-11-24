@@ -2,12 +2,12 @@
 // Admin onchain actions: create sale from an application, per sale controls, escrow milestones, singleton controls.
 import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
-import { formatEther, isAddress, parseEther, parseEventLogs, parseUnits, type Abi, type Address, type Hash, type TransactionReceipt } from 'viem';
+import { formatEther, formatUnits, isAddress, parseEther, parseEventLogs, parseUnits, type Abi, type Address, type Hash, type TransactionReceipt } from 'viem';
 import { useAccount, usePublicClient, useReadContract, useReadContracts, useWriteContract } from 'wagmi';
 import Button from '@/components/ui/Button';
 import type { Sale } from '@/lib/types';
 import {
-  ALLOCATION_MARKET_ABI, CHAIN_ID, CONTRACT_NAMES, LIQUIDITY_LOCKER_ABI, MILESTONE_ESCROW_ABI, PARTICIPATION_BADGE_ABI, SALE_FACTORY_ABI,
+  ALLOCATION_MARKET_ABI, CHAIN_ID, OBSID_STAKING_ABI, CONTRACT_NAMES, LIQUIDITY_LOCKER_ABI, MILESTONE_ESCROW_ABI, PARTICIPATION_BADGE_ABI, SALE_FACTORY_ABI,
   SEALED_BID_SALE_ABI, VESTING_VAULT_ABI, addressUrl, defaultTickGrid, errMsg, erc20Abi, pricePerWholeToken, txUrl, useContracts,
 } from '@/lib/chain';
 import { saleAddress } from '@/components/core/contracts';
@@ -312,6 +312,7 @@ const SINGLETONS = [
   { name: 'ParticipationBadge', abi: PARTICIPATION_BADGE_ABI },
   { name: 'AllocationMarket', abi: ALLOCATION_MARKET_ABI },
   { name: 'LiquidityLocker', abi: LIQUIDITY_LOCKER_ABI },
+  { name: 'ObsidStaking', abi: OBSID_STAKING_ABI },
 ] as const;
 
 export function ContractsPanel() {
@@ -411,7 +412,77 @@ export function ContractsPanel() {
           </div>
         </div>
       )}
+      {contracts.ObsidStaking && <StakingControls staking={contracts.ObsidStaking} busy={busy} run={run} />}
       <TxNote note={note} hash={hash} />
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------- $OBSID staking gate */
+
+function StakingControls({ staking, busy, run }: { staking: Address; busy: string | null; run: ReturnType<typeof useTx>['run'] }) {
+  const st = useReadContracts({
+    allowFailure: true,
+    contracts: (['totalStaked', 'thresholds', 'gateTier', 'cooldown', 'babt', 'requireBabt', 'token', 'paused'] as const).map((fn) => ({ address: staking, abi: OBSID_STAKING_ABI, functionName: fn, chainId: CHAIN_ID })),
+  });
+  const g = (i: number) => (st.data?.[i]?.status === 'success' ? st.data[i].result : undefined);
+  const token = g(6) as Address | undefined;
+  const dec = useReadContract({ address: token, abi: erc20Abi, functionName: 'decimals', chainId: CHAIN_ID, query: { enabled: !!token } });
+  const decimals = dec.data !== undefined ? Number(dec.data) : undefined;
+  const fmtTok = (v: unknown) => (typeof v === 'bigint' && decimals !== undefined ? Number(formatUnits(v, decimals)).toLocaleString('en-US') : '…');
+  const thresholds = (g(1) as readonly bigint[] | undefined) ?? [];
+  const cooldownS = g(3) !== undefined ? Number(g(3)) : undefined;
+  const paused = g(7) as boolean | undefined;
+
+  const [tiers, setTiers] = useState('');
+  const [gate, setGate] = useState('');
+  const [cd, setCd] = useState('');
+  const [babtAddr, setBabtAddr] = useState('');
+  const [req, setReq] = useState(false);
+  const after = (rc: TransactionReceipt | null) => { if (rc) st.refetch(); };
+
+  const tierList = tiers.split(',').map((t) => t.trim()).filter(Boolean);
+  const tiersOk = decimals !== undefined && tierList.length > 0 && tierList.length <= 10 && tierList.every((t) => /^\d+(\.\d+)?$/.test(t) && Number(t) > 0) && tierList.every((t, i) => i === 0 || Number(t) > Number(tierList[i - 1]));
+  const gateN = Number(gate);
+  const cdDays = Number(cd);
+
+  return (
+    <div className="rounded-blob border border-ink/10 p-6">
+      <Kicker>$OBSID staking gate (ObsidStaking)</Kicker>
+      <p className="mt-1 font-body text-sm text-ink-soft">Wallets staking at least the gate tier can bid in gated sales created after SaleFactory.setBabt pointed here. Optionally also require BABT KYC.</p>
+      <ul className="mt-4 grid gap-2 font-mono text-xs md:grid-cols-2">
+        <li>Total staked: {fmtTok(g(0))}</li>
+        <li>Gate tier: {g(2) !== undefined ? String(g(2)) : '…'}</li>
+        <li>Thresholds: {thresholds.length ? thresholds.map((t, i) => `T${i + 1} ${fmtTok(t)}`).join(' · ') : '…'}</li>
+        <li>Unstake cooldown: {cooldownS !== undefined ? `${(cooldownS / 86400).toLocaleString('en-US', { maximumFractionDigits: 2 })} days` : '…'}</li>
+        <li>BABT: {g(4) ? short(String(g(4))) : '…'} · {g(5) === undefined ? '…' : g(5) ? 'required' : 'not required'}</li>
+        <li>Status: {paused === undefined ? '…' : paused ? 'paused' : 'live'}</li>
+      </ul>
+      <div className="mt-5 grid gap-3 md:grid-cols-3 md:items-end">
+        <Field label="Tier thresholds" hint="whole tokens, ascending, comma separated"><Input mono value={tiers} onChange={(e) => setTiers(e.target.value)} placeholder="10000, 50000, 250000, 1000000" /></Field>
+        <span />
+        <Button size="sm" variant="ink" disabled={!!busy || !tiersOk} onClick={async () => after(await run('Set tiers', { address: staking, abi: OBSID_STAKING_ABI, functionName: 'setTiers', args: [tierList.map((t) => parseUnits(t, decimals!))] }))}>Set tiers</Button>
+      </div>
+      <div className="mt-4 grid gap-3 md:grid-cols-3 md:items-end">
+        <Field label="Gate tier" hint={`1 to ${thresholds.length || '?'}`}><Input mono value={gate} onChange={(e) => setGate(e.target.value)} placeholder={g(2) !== undefined ? String(g(2)) : '1'} /></Field>
+        <span />
+        <Button size="sm" variant="ink" disabled={!!busy || !(Number.isInteger(gateN) && gateN >= 1 && gateN <= thresholds.length)} onClick={async () => after(await run('Set gate tier', { address: staking, abi: OBSID_STAKING_ABI, functionName: 'setGateTier', args: [gateN] }))}>Set gate tier</Button>
+      </div>
+      <div className="mt-4 grid gap-3 md:grid-cols-3 md:items-end">
+        <Field label="Unstake cooldown" hint="days, max 30"><Input mono value={cd} onChange={(e) => setCd(e.target.value)} placeholder="7" /></Field>
+        <span />
+        <Button size="sm" variant="ink" disabled={!!busy || cd === '' || !(cdDays >= 0 && cdDays <= 30)} onClick={async () => after(await run('Set cooldown', { address: staking, abi: OBSID_STAKING_ABI, functionName: 'setCooldown', args: [BigInt(Math.round(cdDays * 86400))] }))}>Set cooldown</Button>
+      </div>
+      <div className="mt-4 grid gap-3 md:grid-cols-3 md:items-end">
+        <Field label="BABT address" hint="Binance KYC token"><Input mono value={babtAddr} onChange={(e) => setBabtAddr(e.target.value.trim())} placeholder={g(4) ? String(g(4)) : '0x…'} /></Field>
+        <label className="flex items-center gap-2 font-body text-sm"><input type="checkbox" checked={req} onChange={(e) => setReq(e.target.checked)} /> Also require BABT</label>
+        <Button size="sm" variant="ink" disabled={!!busy || !isAddress(babtAddr || String(g(4) ?? '')) || (req && /^0x0{40}$/i.test(babtAddr || String(g(4) ?? '')))} onClick={async () => after(await run('Set BABT', { address: staking, abi: OBSID_STAKING_ABI, functionName: 'setBabt', args: [babtAddr || String(g(4)), req] }))}>Set BABT</Button>
+      </div>
+      <div className="mt-4 flex flex-wrap gap-2">
+        <Button size="sm" variant={paused ? 'lemon' : 'ghost'} disabled={!!busy || paused === undefined} onClick={async () => after(await run(paused ? 'Unpause staking' : 'Pause staking', { address: staking, abi: OBSID_STAKING_ABI, functionName: paused ? 'unpause' : 'pause' }))}>{paused ? 'Unpause staking' : 'Pause staking'}</Button>
+        <Button size="sm" variant="ghost" onClick={() => st.refetch()}>Reload</Button>
+      </div>
+      <p className="mt-3 font-body text-xs text-ink-mute">Pausing blocks new stakes and cancels; requests to unstake and withdrawals keep working.</p>
     </div>
   );
 }

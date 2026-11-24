@@ -2,7 +2,7 @@
 // Browser deploy of the full Obsid stack on BNB Smart Chain mainnet, signed by the admin wallet.
 // Order and constructor args follow contracts/DEPLOY.md: 7 deployments, 3 wiring calls, then the backend registry.
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { encodeDeployData, formatEther, getAddress, isAddress, parseEther, type Abi, type Address, type Hash, type Hex } from 'viem';
+import { encodeDeployData, erc20Abi, formatEther, getAddress, isAddress, parseEther, parseUnits, type Abi, type Address, type Hash, type Hex } from 'viem';
 import { useAccount, useBalance, usePublicClient, useWalletClient } from 'wagmi';
 import AppShell from '@/components/ui/AppShell';
 import Button from '@/components/ui/Button';
@@ -11,6 +11,7 @@ import { Field, Gate, Input, Kicker, PageHead, Rise, Tag, cx, short, useAuth } f
 import { adminSaveConfig, DEMO } from '@/components/hostbuyer/client';
 import { ARTIFACTS, CHAIN_ID, CONTRACTS_QUERY_KEY, addressUrl, errMsg, txUrl, type ContractName } from '@/lib/chain';
 import { ADMIN_WALLET } from '@/lib/wagmi';
+import { OBSID_CA } from '@/lib/token';
 import { useQueryClient } from '@tanstack/react-query';
 import { bsc } from 'wagmi/chains';
 
@@ -305,6 +306,8 @@ function Deployer({ admin }: { admin: Address }) {
       </Rise>
 
       {allDeployed && <Checks addrs={deployedAddrs()} admin={admin} />}
+
+      <StakingStep admin={admin} factory={addr('factory')} />
     </div>
   );
 }
@@ -391,6 +394,153 @@ function Checks({ addrs, admin }: { addrs: Record<DeployKey, Address>; admin: Ad
         </ul>
       )}
       <p className="mt-4 font-body text-xs text-ink-mute">Verify each contract on BscScan with solc 0.8.24, optimizer on at 200 runs, EVM version paris.</p>
+    </Rise>
+  );
+}
+
+/* ---------------------------------------------------------------- optional: $OBSID staking gate */
+
+const STAKE_LS_KEY = 'obsid.deploy.staking.v1';
+const DEFAULT_TIERS = ['10000', '50000', '250000', '1000000'];
+type StakeKey = 'deploy' | 'setBabt' | 'config';
+interface StakeSaved { token: string; tiers: string[]; factory: string; steps: Partial<Record<StakeKey, StepState>> }
+
+function loadStake(): StakeSaved {
+  const d: StakeSaved = { token: OBSID_CA ?? '', tiers: DEFAULT_TIERS, factory: '', steps: {} };
+  try { const r = localStorage.getItem(STAKE_LS_KEY); if (r) return { ...d, ...(JSON.parse(r) as StakeSaved) }; } catch {}
+  return d;
+}
+
+function StakingStep({ admin, factory: deployedFactory }: { admin: Address; factory?: Address }) {
+  const publicClient = usePublicClient({ chainId: CHAIN_ID });
+  const { data: walletClient } = useWalletClient({ chainId: CHAIN_ID });
+  const { auth } = useAuth();
+  const qc = useQueryClient();
+  const [s, setS] = useState<StakeSaved>(() => ({ token: OBSID_CA ?? '', tiers: DEFAULT_TIERS, factory: '', steps: {} }));
+  const [loaded, setLoaded] = useState(false);
+  useEffect(() => { setS(loadStake()); setLoaded(true); }, []);
+  useEffect(() => { if (loaded) try { localStorage.setItem(STAKE_LS_KEY, JSON.stringify(s)); } catch {} }, [s, loaded]);
+  const [running, setRunning] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [token, setToken] = useState<{ decimals: number; symbol: string } | null>(null);
+
+  const factory = s.factory || deployedFactory || '';
+  const setStep = (k: StakeKey, st: StepState) => setS((x) => ({ ...x, steps: { ...x.steps, [k]: st } }));
+  const started = Object.values(s.steps).some((x) => x && x.status !== 'idle');
+
+  useEffect(() => {
+    setToken(null);
+    if (!publicClient || !isAddress(s.token)) return;
+    let live = true;
+    Promise.all([
+      publicClient.readContract({ address: s.token as Address, abi: erc20Abi, functionName: 'decimals' }),
+      publicClient.readContract({ address: s.token as Address, abi: erc20Abi, functionName: 'symbol' }).catch(() => '?'),
+    ]).then(([decimals, symbol]) => { if (live) setToken({ decimals: Number(decimals), symbol: String(symbol) }); }).catch(() => {});
+    return () => { live = false; };
+  }, [publicClient, s.token]);
+
+  const problems = useMemo(() => {
+    const out: string[] = [];
+    if (!isAddress(s.token)) out.push('Enter the $OBSID token address.');
+    else if (!token) out.push('Could not read decimals from that token yet.');
+    if (!isAddress(factory)) out.push('A SaleFactory address is needed (deploy above or paste one).');
+    const nums = s.tiers.map((t) => t.trim()).filter(Boolean);
+    if (nums.length === 0 || nums.length > 10) out.push('Use between 1 and 10 tiers.');
+    if (nums.some((t) => !/^\d+(\.\d+)?$/.test(t) || Number(t) <= 0)) out.push('Every tier must be a positive number of whole tokens.');
+    else if (nums.some((t, i) => i > 0 && Number(t) <= Number(nums[i - 1]))) out.push('Tiers must go up strictly.');
+    return out;
+  }, [s.token, s.tiers, token, factory]);
+
+  const run = async () => {
+    if (problems.length || !publicClient || !walletClient || !token) return;
+    setRunning(true); setMsg('');
+    let cur: StakeKey = 'deploy';
+    try {
+      let staking = s.steps.deploy?.status === 'done' ? s.steps.deploy.address : undefined;
+      if (!staking) {
+        const art = ARTIFACTS.ObsidStaking;
+        const thresholds = s.tiers.map((t) => t.trim()).filter(Boolean).map((t) => parseUnits(t, token.decimals));
+        let hash = s.steps.deploy?.status === 'pending' ? s.steps.deploy.hash : undefined;
+        if (!hash) {
+          setStep('deploy', { status: 'pending' });
+          hash = await walletClient.deployContract({ abi: art.abi as Abi, bytecode: art.bytecode as Hex, args: [admin, getAddress(s.token), thresholds], account: admin, chain: bsc });
+          setStep('deploy', { status: 'pending', hash });
+        }
+        const rc = await publicClient.waitForTransactionReceipt({ hash });
+        if (rc.status !== 'success' || !rc.contractAddress) throw new Error('ObsidStaking deployment reverted');
+        staking = rc.contractAddress;
+        setStep('deploy', { status: 'done', hash, address: staking });
+      }
+      cur = 'setBabt';
+      const fac = getAddress(factory);
+      const now = (await publicClient.readContract({ address: fac, abi: ARTIFACTS.SaleFactory.abi as Abi, functionName: 'babt' })) as Address;
+      if (now.toLowerCase() !== staking.toLowerCase()) {
+        setStep('setBabt', { status: 'pending' });
+        const hash = await walletClient.writeContract({ address: fac, abi: ARTIFACTS.SaleFactory.abi as Abi, functionName: 'setBabt', args: [staking], account: admin, chain: bsc });
+        setStep('setBabt', { status: 'pending', hash });
+        const rc = await publicClient.waitForTransactionReceipt({ hash });
+        if (rc.status !== 'success') throw new Error('SaleFactory.setBabt reverted');
+        setStep('setBabt', { status: 'done', hash });
+      } else setStep('setBabt', { status: 'done', hash: s.steps.setBabt?.hash });
+      cur = 'config';
+      setMsg('Staking is live and gating new sales. Sign in to save the address to the backend.');
+      await adminSaveConfig({ ObsidStaking: staking }, await auth(), true);
+      setStep('config', { status: 'done' });
+      qc.invalidateQueries({ queryKey: CONTRACTS_QUERY_KEY });
+      setMsg('Done. ObsidStaking is saved to the backend registry.');
+    } catch (e) {
+      const m = errMsg(e);
+      setStep(cur, { status: 'error', error: m });
+      setMsg(`Stopped at ${cur}: ${m}`);
+    } finally { setRunning(false); }
+  };
+
+  const allDone = s.steps.deploy?.status === 'done' && s.steps.setBabt?.status === 'done' && s.steps.config?.status === 'done';
+  return (
+    <Rise className="rounded-blob border border-ink/10 bg-paper p-6 md:p-8">
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <Kicker>Optional extra step</Kicker>
+          <p className="mt-2 font-display text-2xl font-semibold">Deploy $OBSID staking</p>
+        </div>
+        <Tag tone="mute">optional</Tag>
+      </div>
+      <p className="mt-3 font-body text-sm text-ink-soft">
+        Deploys ObsidStaking and points SaleFactory.setBabt at it. Every sale created afterwards with the BABT requirement switched on becomes a staker gated sale: only wallets staking at least the gate tier can bid. Sales created before this step keep the gate they were created with. BABT KYC can still be required on top of staking later with staking.setBabt from the admin Contracts tab.
+      </p>
+      <div className="mt-5 grid gap-5 md:grid-cols-2">
+        <Field label="$OBSID token" hint={token ? `${token.symbol}, ${token.decimals} decimals` : 'address on BSC'}>
+          <Input mono value={s.token} disabled={started} onChange={(e) => setS((x) => ({ ...x, token: e.target.value.trim() }))} placeholder="0x…" />
+        </Field>
+        <Field label="SaleFactory" hint={deployedFactory && !s.factory ? 'from the deploy above' : 'paste if deployed earlier'}>
+          <Input mono value={factory} disabled={started} onChange={(e) => setS((x) => ({ ...x, factory: e.target.value.trim() }))} placeholder="0x…" />
+        </Field>
+        <Field label="Tier thresholds" hint="whole tokens, comma separated, ascending">
+          <Input mono value={s.tiers.join(', ')} disabled={started} onChange={(e) => setS((x) => ({ ...x, tiers: e.target.value.split(',').map((t) => t.trim()) }))} />
+        </Field>
+        <Field label="Owner"><Input mono value={admin} disabled /></Field>
+      </div>
+      <p className="mt-3 font-body text-xs text-ink-mute">The gate starts at tier 1 with a 7 day unstake cooldown. Both can be changed later from the admin Contracts tab.</p>
+      {problems.length > 0 && <ul className="mt-3 list-disc pl-5 font-body text-sm text-red-700">{problems.map((x) => <li key={x}>{x}</li>)}</ul>}
+      <div className="mt-5 flex flex-wrap gap-2">
+        <Button variant="lemon" disabled={running || problems.length > 0 || !walletClient} onClick={run}>
+          {running ? 'Working, confirm in MetaMask' : allDone ? 'Run again' : started ? 'Resume staking step' : 'Deploy staking'}
+        </Button>
+        {started && !running && <Button variant="ghost" onClick={() => { if (window.confirm('Forget staking progress on this device? A deployed contract stays onchain.')) setS((x) => ({ ...x, steps: {} })); }}>Reset</Button>}
+      </div>
+      {msg && <p className="mt-4 rounded-2xl bg-ink p-4 font-body text-sm text-lemon">{msg}</p>}
+      <ol className="mt-6 divide-y divide-ink/10">
+        <StepRow n={1} label="ObsidStaking" note="Stake $OBSID for tiers. Doubles as the sale gate." st={s.steps.deploy}
+          onManual={running ? undefined : async (a) => {
+            if (!publicClient) return;
+            const code = await publicClient.getBytecode({ address: a });
+            if (!code || code === '0x') { setMsg(`No contract found at ${a}`); return; }
+            setStep('deploy', { status: 'done', address: a });
+          }}
+          onReset={running ? undefined : () => setStep('deploy', { status: 'idle' })} />
+        <StepRow n={2} label="SaleFactory.setBabt(staking)" note="New gated sales check stake instead of BABT." st={s.steps.setBabt} onReset={running ? undefined : () => setStep('setBabt', { status: 'idle' })} />
+        <StepRow n={3} label="Save ObsidStaking to the backend" note={DEMO ? 'No backend URL is configured, so this step cannot run here.' : 'Merges into the registry without touching other addresses.'} st={s.steps.config} onReset={running ? undefined : () => setStep('config', { status: 'idle' })} />
+      </ol>
     </Rise>
   );
 }

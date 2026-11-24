@@ -7,6 +7,7 @@ import Logo from '@/components/ui/Logo';
 import NetworkChip from '@/components/ui/NetworkChip';
 import HeatGauge from '@/components/ui/HeatGauge';
 import Reveal, { SplitWords } from '@/components/core/Reveal';
+import TokenBlock from '@/components/token/TokenBlock';
 
 const steps = [
   { n: '01', t: 'Seal', s: 'your bid', d: 'Pick a price and an amount. Your browser hashes them with a secret salt. Only the fingerprint goes onchain, along with your BNB deposit.' },
@@ -89,15 +90,16 @@ export default function Landing() {
                 </Button>
                 <Button href="/how-to" variant="ghost" size="lg">How it works</Button>
               </div>
+              <TokenBlock className="mt-8" />
             </Reveal>
             <Reveal delay={1.1} className="md:col-span-4 md:col-start-9">
               <div className="rounded-blob bg-paper p-6 shadow-[0_30px_80px_-30px_rgba(11,15,5,0.35)] ring-1 ring-ink/5">
                 <div className="flex items-center justify-between">
-                  <span className="font-label text-[10px] font-bold uppercase tracking-[0.2em] text-ink-mute">Live sale</span>
+                  <span className="font-label text-[10px] font-bold uppercase tracking-[0.2em] text-ink-mute">Example sale</span>
                   <span className="font-mono text-[11px] text-ink-mute">VRD / BNB</span>
                 </div>
                 <p className="mt-4 font-mono text-4xl font-medium tracking-tight">1,284.5<span className="ml-1 text-base text-ink-mute">BNB</span></p>
-                <p className="font-body text-sm text-ink-mute">committed by 912 sealed bids</p>
+                <p className="font-body text-sm text-ink-mute">committed by 912 sealed bids, illustration only</p>
                 <div className="mt-5"><HeatGauge heat="on fire" /></div>
                 <div className="mt-5 flex items-center gap-2 rounded-2xl bg-frost p-3">
                   <span className="font-label text-[10px] font-bold uppercase tracking-wider text-ink-mute">Your bid</span>
