@@ -2,6 +2,7 @@ import request from 'supertest';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { generatePrivateKey, privateKeyToAccount, type PrivateKeyAccount } from 'viem/accounts';
 import type { Express } from 'express';
+import { getAddress } from 'viem';
 import { createApp } from '../src/app.js';
 import { DEFAULT_ADMIN_WALLET, loadConfig } from '../src/config.js';
 import { MemoryStore } from '../src/store/memory.js';
@@ -408,6 +409,62 @@ describe('rate limiting', () => {
     expect(c.rateLimitMax).toBeGreaterThanOrEqual(100);
     expect(c.nonceRateLimitMax).toBeGreaterThanOrEqual(5);
     expect(c.nonceRateLimitMax).toBeLessThanOrEqual(120);
+  });
+});
+
+describe('contract config registry', () => {
+  const A = '0x00000000000000000000000000000000000000aa';
+  const B = '0x00000000000000000000000000000000000000bB';
+
+  it('GET /api/config is public and empty by default', async () => {
+    const r = await request(app).get('/api/config');
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({ chainId: 56, contracts: {} });
+  });
+
+  it('PUT /api/admin/config requires admin', async () => {
+    expect((await request(app).put('/api/admin/config').send({ contracts: {} })).status).toBe(401);
+    const r = await request(app).put('/api/admin/config').set(await authHeaders(app, newAccount())).send({ contracts: {} });
+    expect(r.status).toBe(403);
+  });
+
+  it('admin saves checksummed addresses, merges and clears', async () => {
+    const r = await request(app)
+      .put('/api/admin/config')
+      .set(await authHeaders(app, admin))
+      .send({ contracts: { SaleFactory: A, VestingVault: B } });
+    expect(r.status).toBe(200);
+    expect(r.body.contracts).toEqual({ SaleFactory: getAddress(A), VestingVault: getAddress(B) });
+    expect((await request(app).get('/api/config')).body.contracts.SaleFactory).toBe('0x00000000000000000000000000000000000000AA');
+
+    const merged = await request(app)
+      .put('/api/admin/config')
+      .set(await authHeaders(app, admin))
+      .send({ merge: true, contracts: { AllocationMarket: A, VestingVault: null } });
+    expect(merged.status).toBe(200);
+    expect(Object.keys(merged.body.contracts).sort()).toEqual(['AllocationMarket', 'SaleFactory']);
+
+    const replaced = await request(app).put('/api/admin/config').set(await authHeaders(app, admin)).send({ contracts: { LiquidityLocker: B } });
+    expect(Object.keys(replaced.body.contracts)).toEqual(['LiquidityLocker']);
+    expect(await store.getContracts()).toEqual(replaced.body.contracts);
+  });
+
+  it('rejects invalid, zero and unknown addresses', async () => {
+    for (const contracts of [
+      { SaleFactory: '0x123' },
+      { SaleFactory: '0x0000000000000000000000000000000000000000' },
+      { Bogus: A },
+    ]) {
+      const r = await request(app).put('/api/admin/config').set(await authHeaders(app, admin)).send({ contracts });
+      expect(r.status, JSON.stringify(contracts)).toBe(400);
+    }
+    expect((await request(app).put('/api/admin/config').set(await authHeaders(app, admin)).send({})).status).toBe(400);
+    expect((await request(app).get('/api/config')).body.contracts).toEqual({});
+  });
+
+  it('CORS allows PUT', async () => {
+    const r = await request(app).options('/api/admin/config').set('Origin', 'http://localhost:3000').set('Access-Control-Request-Method', 'PUT');
+    expect(r.headers['access-control-allow-methods']).toContain('PUT');
   });
 });
 

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { getAddress, isAddress } from 'viem';
-import { SALE_STATUSES, SALE_TYPES } from './types.js';
+import { CONTRACT_NAMES, SALE_STATUSES, SALE_TYPES } from './types.js';
 
 export const addressSchema = z
   .string()
@@ -139,5 +139,23 @@ export const salePatchBody = z
     bidCount: z.coerce.number().int().min(0).optional(),
     clearingPrice: z.union([z.coerce.number().finite().positive(), z.null()]).optional(),
     milestonesReleased: z.array(z.boolean()).optional(),
+  })
+  .strict();
+
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
+const contractAddress = addressSchema.refine((v) => v !== ZERO_ADDRESS, 'zero address not allowed');
+
+/** PUT /api/admin/config body. Every contract key is optional; null or '' clears it. */
+export const configPutBody = z
+  .object({
+    contracts: z
+      .object(
+        Object.fromEntries(CONTRACT_NAMES.map((n) => [n, z.union([contractAddress, z.null(), z.literal('')]).optional()])) as Record<
+          (typeof CONTRACT_NAMES)[number],
+          z.ZodOptional<z.ZodUnion<[typeof contractAddress, z.ZodNull, z.ZodLiteral<''>]>>
+        >,
+      )
+      .strict(),
+    merge: z.boolean().optional(),
   })
   .strict();

@@ -4,8 +4,9 @@ import { HttpError } from '../http.js';
 import { hostJSON, saleJSON } from '../serialize.js';
 import { newId, nowIso, uniqueSlug } from '../services.js';
 import type { Store } from '../store/types.js';
-import type { SaleRecord, SaleStatus } from '../types.js';
-import { approveBody, optionalRejectBody, rejectBody, reviewStatusQuery, salePatchBody } from '../validation.js';
+import { CONTRACT_NAMES, type ContractRegistry, type SaleRecord, type SaleStatus } from '../types.js';
+import { CHAIN_ID } from './public.js';
+import { approveBody, configPutBody, optionalRejectBody, rejectBody, reviewStatusQuery, salePatchBody } from '../validation.js';
 
 export function adminRouter(store: Store, auth: RequestHandler): Router {
   const r = Router();
@@ -104,6 +105,23 @@ export function adminRouter(store: Store, auth: RequestHandler): Router {
     sale.updatedAt = nowIso();
     await store.updateSale(sale);
     res.json(saleJSON(sale));
+  });
+
+  /**
+   * Save the contract address registry. Replaces the stored registry with the given keys unless
+   * `merge: true`, in which case only provided keys change. null or '' removes a key.
+   */
+  r.put('/config', async (req, res) => {
+    const body = configPutBody.parse(req.body ?? {});
+    const next: ContractRegistry = body.merge ? await store.getContracts() : {};
+    for (const name of CONTRACT_NAMES) {
+      const v = body.contracts[name];
+      if (v === undefined) continue;
+      if (v === null || v === '') delete next[name];
+      else next[name] = v;
+    }
+    await store.setContracts(next);
+    res.json({ chainId: CHAIN_ID, contracts: next });
   });
 
   r.get('/profile-changes', async (req, res) => {

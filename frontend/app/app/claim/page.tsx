@@ -1,24 +1,32 @@
 'use client';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useEffect, useState } from 'react';
-import { isAddress } from 'viem';
-import { useWriteContract } from 'wagmi';
+import { formatUnits, isAddress, type Address } from 'viem';
+import { useReadContracts, useWriteContract } from 'wagmi';
 import AppShell from '@/components/ui/AppShell';
 import Button from '@/components/ui/Button';
 import ConnectWallet from '@/components/ui/ConnectWallet';
 import Redacted from '@/components/ui/Redacted';
 import { fetchSales } from '@/lib/api';
 import { useRole } from '@/lib/role';
-import { VESTING_VAULT, vestingAbiPlaceholder } from '@/components/hostbuyer/abis';
+import { VESTING_VAULT_ABI, useContracts } from '@/components/hostbuyer/abis';
+import { saleAddress } from '@/components/core/contracts';
+import { useSaleDecimals } from '@/components/core/useSaleChain';
+import { CHAIN_ID, errMsg, txUrl } from '@/lib/chain';
+import type { Sale } from '@/lib/types';
 import { allBids, vestedAt, vestingFor, type Vesting } from '@/components/hostbuyer/bids';
 import { DemoNote, Field, Input, Kicker, PageHead, Rise, cx, ease, fmt, fmtDate, short, useAuth } from '@/components/hostbuyer/kit';
 
 export default function ClaimPage() {
   const { role } = useRole();
-  const { isConnected } = useAuth();
+  const { isConnected, address } = useAuth();
+  const { contracts } = useContracts();
+  const vault = contracts.VestingVault;
   const [list, setList] = useState<Vesting[] | null>(null);
-  useEffect(() => { fetchSales().then((s) => setList(vestingFor(allBids(s)))); }, []);
+  const [sales, setSales] = useState<Sale[]>([]);
+  useEffect(() => { fetchSales().then((s) => { setSales(s); setList(vestingFor(allBids(s))); }); }, []);
   const priv = role !== 'host';
+  const onchainSales = sales.filter((s) => saleAddress(s));
 
   return (
     <AppShell>
@@ -36,6 +44,7 @@ export default function ClaimPage() {
             <ConnectWallet size="sm" />
           </div>
         )}
+        {vault && address && onchainSales.length > 0 && <OnchainClaims vault={vault} sales={onchainSales} holder={address} priv={priv} />}
         {list === null ? (
           <div className="h-60 animate-pulse rounded-blob bg-chalk" />
         ) : list.length === 0 ? (
@@ -50,6 +59,7 @@ export default function ClaimPage() {
 
 function VestCard({ v, i, priv }: { v: Vesting; i: number; priv: boolean }) {
   const { address } = useAuth();
+  const vault = useContracts().contracts.VestingVault;
   const [fresh, setFresh] = useState(false);
   const [to, setTo] = useState('');
   const [claimed, setClaimed] = useState(v.claimed);
@@ -67,16 +77,17 @@ function VestCard({ v, i, priv }: { v: Vesting; i: number; priv: boolean }) {
   async function claim() {
     setNote('');
     if (!destOk) return setNote('Enter a valid address');
-    if (!VESTING_VAULT) {
+    const saleAddr = v.row.sale ? saleAddress(v.row.sale) : null;
+    if (!vault || !saleAddr) {
       setClaimed((c) => c + claimable);
-      setNote(`Demo claim sent to ${short(dest)}. Set NEXT_PUBLIC_VESTING_VAULT to claim onchain.`);
+      setNote(`Demo claim sent to ${short(dest)}. Onchain claims appear above once the sale and vesting vault are live.`);
       return;
     }
     try {
-      const hash = await writeContractAsync({ address: VESTING_VAULT, abi: vestingAbiPlaceholder, functionName: 'claim', args: [dest as `0x${string}`] });
+      const hash = await writeContractAsync({ address: vault, abi: VESTING_VAULT_ABI, functionName: 'claim', args: [saleAddr, dest as Address], chainId: CHAIN_ID });
       setClaimed((c) => c + claimable);
       setNote(`Submitted ${short(hash)}`);
-    } catch (e) { setNote(e instanceof Error ? e.message.split('\n')[0].slice(0, 140) : 'Claim failed'); }
+    } catch (e) { setNote(errMsg(e)); }
   }
 
   return (
@@ -142,6 +153,94 @@ function VestCard({ v, i, priv }: { v: Vesting; i: number; priv: boolean }) {
           {note && <p className="mt-4 font-serif italic text-ink-soft">{note}</p>}
         </div>
       </div>
+    </Rise>
+  );
+}
+
+/* ---------- live VestingVault positions ---------- */
+type Pos = { sale: Sale; addr: Address; total: bigint; claimed: bigint; claimable: bigint; tgeTime: number; tgeBps: number; cliff: number; duration: number; decimals: number };
+
+function OnchainClaims({ vault, sales, holder, priv }: { vault: Address; sales: Sale[]; holder: Address; priv: boolean }) {
+  const addrs = sales.map((s) => saleAddress(s)!) as Address[];
+  const decimals = useSaleDecimals(addrs);
+  const reads = useReadContracts({
+    allowFailure: true,
+    contracts: addrs.flatMap((a) => [
+      { address: vault, abi: VESTING_VAULT_ABI, functionName: 'positions', args: [a, holder], chainId: CHAIN_ID },
+      { address: vault, abi: VESTING_VAULT_ABI, functionName: 'claimable', args: [a, holder], chainId: CHAIN_ID },
+      { address: vault, abi: VESTING_VAULT_ABI, functionName: 'schedules', args: [a], chainId: CHAIN_ID },
+    ]),
+    query: { refetchInterval: 30_000 },
+  });
+  const rows: Pos[] = [];
+  addrs.forEach((a, i) => {
+    const d = reads.data;
+    const p = d?.[i * 3]?.status === 'success' ? (d[i * 3].result as readonly [bigint, bigint]) : undefined;
+    const c = d?.[i * 3 + 1]?.status === 'success' ? (d[i * 3 + 1].result as bigint) : 0n;
+    const sc = d?.[i * 3 + 2]?.status === 'success' ? (d[i * 3 + 2].result as readonly [Address, Address, bigint, number, bigint, bigint, boolean]) : undefined;
+    if (!p || p[0] === 0n) return;
+    rows.push({ sale: sales[i], addr: a, total: p[0], claimed: p[1], claimable: c, tgeTime: Number(sc?.[2] ?? 0n), tgeBps: Number(sc?.[3] ?? 0), cliff: Number(sc?.[4] ?? 0n), duration: Number(sc?.[5] ?? 0n), decimals: decimals[a.toLowerCase()] ?? 18 });
+  });
+  if (reads.isLoading) return <div className="mb-8 h-32 animate-pulse rounded-blob bg-chalk" />;
+  if (!rows.length) return <p className="mb-8 font-serif text-lg italic text-ink-mute">No vesting positions onchain for this wallet yet. Settle your bid on the sale page first.</p>;
+  return <div className="mb-10 space-y-6">{rows.map((r) => <OnchainCard key={r.addr} p={r} vault={vault} priv={priv} onDone={() => reads.refetch()} />)}</div>;
+}
+
+function OnchainCard({ p, vault, priv, onDone }: { p: Pos; vault: Address; priv: boolean; onDone: () => void }) {
+  const { address } = useAuth();
+  const [fresh, setFresh] = useState(false);
+  const [to, setTo] = useState('');
+  const [note, setNote] = useState('');
+  const { writeContractAsync, isPending } = useWriteContract();
+  const n = (x: bigint) => fmt(Number(formatUnits(x, p.decimals)), 4);
+  const dest = fresh ? to : address;
+  const day = 86400;
+  async function claim() {
+    setNote('');
+    if (!dest || !isAddress(dest)) return setNote('Enter a valid address');
+    try {
+      const hash = await writeContractAsync({ address: vault, abi: VESTING_VAULT_ABI, functionName: 'claim', args: [p.addr, dest as Address], chainId: CHAIN_ID });
+      setNote(`Submitted ${short(hash)}`);
+      setTimeout(onDone, 6000);
+      window.open(txUrl(hash), '_blank', 'noopener');
+    } catch (e) { setNote(errMsg(e)); }
+  }
+  return (
+    <Rise className="overflow-hidden rounded-blob border border-ink bg-paper/80 p-6 backdrop-blur-xl md:p-10">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <Kicker>Live onchain position</Kicker>
+          <h2 className="mt-2 font-display text-4xl font-semibold leading-none">{p.sale.tokenName}</h2>
+          <p className="mt-1 font-mono text-sm text-ink-mute">{p.sale.tokenSymbol}</p>
+        </div>
+        <dl className="grid grid-cols-2 gap-5 sm:grid-cols-4">
+          <div><dt><Kicker>Allocation</Kicker></dt><dd className="mt-1 font-mono text-lg"><Redacted active={priv}>{n(p.total)}</Redacted></dd></div>
+          <div><dt><Kicker>Claimed</Kicker></dt><dd className="mt-1 font-mono text-lg"><Redacted active={priv}>{n(p.claimed)}</Redacted></dd></div>
+          <div><dt><Kicker>At unlock</Kicker></dt><dd className="mt-1 font-mono text-lg">{p.tgeBps / 100}%</dd></div>
+          <div><dt><Kicker>Schedule</Kicker></dt><dd className="mt-1 font-mono text-sm">{Math.round(p.cliff / day)}d cliff · {Math.round(p.duration / day)}d linear</dd></div>
+        </dl>
+      </div>
+      <p className="mt-4 font-mono text-xs text-ink-mute">Unlock starts {p.tgeTime ? fmtDate(new Date(p.tgeTime * 1000).toISOString()) : 'when set'}</p>
+      <div className="mt-6 flex flex-wrap items-end justify-between gap-6 rounded-3xl bg-ink p-6 text-paper">
+        <div>
+          <Kicker className="text-lemon">Claimable now</Kicker>
+          <p className="mt-1 font-mono text-4xl"><Redacted active={priv}>{n(p.claimable)}</Redacted></p>
+        </div>
+        <Button variant="lemon" disabled={p.claimable === 0n || isPending} onClick={claim}>{isPending ? 'Confirm in wallet' : 'Claim'}</Button>
+      </div>
+      <label className="mt-5 flex cursor-pointer items-center gap-3">
+        <span className={cx('relative h-6 w-11 rounded-full transition', fresh ? 'bg-lemon ring-1 ring-ink' : 'bg-ink/15')}>
+          <motion.span layout className={cx('absolute top-1 h-4 w-4 rounded-full bg-ink', fresh ? 'right-1' : 'left-1')} />
+        </span>
+        <input type="checkbox" className="sr-only" checked={fresh} onChange={(e) => setFresh(e.target.checked)} />
+        <span className="font-label text-xs font-semibold uppercase tracking-[0.16em]">Claim to a fresh wallet</span>
+      </label>
+      {fresh && (
+        <Field label="Destination" hint="never used before is best" className="mt-4">
+          <Input mono value={to} onChange={(e) => setTo(e.target.value.trim())} placeholder="0x…" />
+        </Field>
+      )}
+      {note && <p className="mt-4 font-serif italic text-ink-soft">{note}</p>}
     </Rise>
   );
 }

@@ -30,6 +30,8 @@ export interface Application extends ApplicationInput {
   hostName?: string;
   status: AppStatus;
   reason?: string;
+  /** Backend sale id once approved. */
+  saleId?: string;
   createdAt: string;
 }
 export interface HostInput {
@@ -55,12 +57,14 @@ export interface AuthHeaders { 'x-address': string; 'x-signature': string; 'x-no
 export type Signer = (message: string) => Promise<string>;
 
 /* ---------- auth ---------- */
+// The backend consumes every nonce on use (single use, replay safe), so real auth headers are good for
+// exactly one request: each call signs a fresh nonce. Only demo headers are cached.
 const authCache = new Map<string, AuthHeaders>();
 export async function getAuth(address: string, sign: Signer): Promise<AuthHeaders> {
   const key = address.toLowerCase();
-  const hit = authCache.get(key);
-  if (hit) return hit;
   if (DEMO) {
+    const hit = authCache.get(key);
+    if (hit) return hit;
     const h = { 'x-address': address, 'x-signature': 'demo', 'x-nonce': 'demo' };
     authCache.set(key, h);
     return h;
@@ -69,13 +73,11 @@ export async function getAuth(address: string, sign: Signer): Promise<AuthHeader
   if (!r.ok) throw new Error('Could not get a sign in nonce');
   const { nonce, message } = (await r.json()) as { nonce: string; message: string };
   const signature = await sign(message);
-  const h = { 'x-address': address, 'x-signature': signature, 'x-nonce': nonce };
-  authCache.set(key, h);
-  return h;
+  return { 'x-address': address, 'x-signature': signature, 'x-nonce': nonce };
 }
 export const clearAuth = () => authCache.clear();
 
-async function req<T>(method: 'GET' | 'POST', path: string, auth?: AuthHeaders, body?: unknown): Promise<T> {
+async function req<T>(method: 'GET' | 'POST' | 'PATCH' | 'PUT', path: string, auth?: AuthHeaders, body?: unknown): Promise<T> {
   const headers: Record<string, string> = { 'content-type': 'application/json' };
   if (auth) Object.assign(headers, auth);
   const r = await fetch(`${API}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), cache: 'no-store' });
@@ -158,20 +160,43 @@ export async function myApplications(auth: AuthHeaders): Promise<Application[]> 
 }
 
 /* ---------- admin ---------- */
+type BackendApplication = Omit<Application, 'hostAddress' | 'hostName' | 'reason'> & { rejectReason?: string; host?: { wallet: string; name: string } | null };
 export async function adminApplications(auth: AuthHeaders): Promise<Application[]> {
-  if (!DEMO) return req<Application[]>('GET', '/api/admin/applications', auth);
+  if (!DEMO) {
+    const rows = await req<BackendApplication[]>('GET', '/api/admin/applications', auth);
+    return rows.map(({ host, rejectReason, ...a }) => ({ ...a, hostAddress: host?.wallet ?? '', hostName: host?.name, reason: rejectReason }));
+  }
   return demoApps();
 }
-export async function approveApplication(id: string, auth: AuthHeaders): Promise<void> {
-  if (!DEMO) { await req('POST', `/api/admin/applications/${id}/approve`, auth, {}); return; }
-  save(LS.apps, demoApps().map((a) => (a.id === id ? { ...a, status: 'approved' as const } : a)));
+/** Approves in the backend; returns the backend sale id (used to attach the onchain contract address). */
+export async function approveApplication(id: string, auth: AuthHeaders): Promise<string | undefined> {
+  if (!DEMO) { const r = await req<{ sale?: { id: string } }>('POST', `/api/admin/applications/${id}/approve`, auth, {}); return r.sale?.id; }
+  save(LS.apps, demoApps().map((a) => (a.id === id ? { ...a, status: 'approved' as const, saleId: `demo_${id}` } : a)));
+  return `demo_${id}`;
+}
+/** PATCH /api/admin/sales/:id (contractAddress, status, aggregates, milestonesReleased). */
+export async function adminPatchSale(id: string, patch: Record<string, unknown>, auth: AuthHeaders): Promise<void> {
+  if (DEMO) return;
+  await req('PATCH', `/api/admin/sales/${encodeURIComponent(id)}`, auth, patch);
+}
+/** PUT /api/admin/config: save the contract address registry. */
+export async function adminSaveConfig(contracts: Record<string, string>, auth: AuthHeaders, merge = false): Promise<void> {
+  if (DEMO) throw new Error('No backend configured (NEXT_PUBLIC_API_URL is unset), so addresses cannot be saved.');
+  await req('PUT', '/api/admin/config', auth, { contracts, ...(merge ? { merge: true } : {}) });
 }
 export async function rejectApplication(id: string, reason: string, auth: AuthHeaders): Promise<void> {
   if (!DEMO) { await req('POST', `/api/admin/applications/${id}/reject`, auth, { reason }); return; }
   save(LS.apps, demoApps().map((a) => (a.id === id ? { ...a, status: 'rejected' as const, reason } : a)));
 }
+type BackendChange = { id: string; status: AppStatus; createdAt: string; changes: { name?: string; wallet?: string }; previous: { name: string; wallet: string }; host?: { wallet: string } | null };
 export async function adminProfileChanges(auth: AuthHeaders): Promise<ProfileChange[]> {
-  if (!DEMO) return req<ProfileChange[]>('GET', '/api/admin/profile-changes', auth);
+  if (!DEMO) {
+    const rows = await req<BackendChange[]>('GET', '/api/admin/profile-changes', auth);
+    // One backend change can touch name and wallet; the approve/reject action applies to the whole change.
+    return rows.flatMap((c) => (['name', 'wallet'] as const)
+      .filter((f) => c.changes?.[f] !== undefined)
+      .map((f) => ({ id: c.id, hostAddress: c.host?.wallet ?? c.previous?.wallet ?? '', field: f, before: c.previous?.[f] ?? '', after: c.changes[f] ?? '', status: c.status, createdAt: c.createdAt })));
+  }
   return demoChanges();
 }
 export async function decideProfileChange(id: string, decision: 'approve' | 'reject', auth: AuthHeaders): Promise<void> {

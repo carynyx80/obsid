@@ -1,5 +1,5 @@
 import pg from 'pg';
-import type { ApplicationRecord, HostRecord, NonceRecord, ProfileChangeRecord, SaleRecord } from '../types.js';
+import type { ApplicationRecord, ContractRegistry, HostRecord, NonceRecord, ProfileChangeRecord, SaleRecord } from '../types.js';
 import { ConflictError, type Store } from './types.js';
 
 /**
@@ -56,6 +56,16 @@ const MIGRATIONS: { version: number; sql: string }[] = [
         expires_at timestamptz not null
       );
       create index if not exists auth_nonces_expires_idx on auth_nonces(expires_at);
+    `,
+  },
+  {
+    version: 2,
+    sql: `
+      create table if not exists app_config (
+        key text primary key,
+        data jsonb not null,
+        updated_at timestamptz not null default now()
+      );
     `,
   },
 ];
@@ -233,5 +243,18 @@ export class PostgresStore implements Store {
   }
   updateProfileChange(p: ProfileChangeRecord) {
     return this.update('profile_changes', p);
+  }
+
+  // ---- config (contract registry) ----
+  async getContracts(): Promise<ContractRegistry> {
+    const { rows } = await this.pool.query<{ data: ContractRegistry }>("select data from app_config where key = 'contracts'");
+    return rows[0]?.data ?? {};
+  }
+  async setContracts(c: ContractRegistry) {
+    await this.pool.query(
+      `insert into app_config (key, data, updated_at) values ('contracts', $1, now())
+       on conflict (key) do update set data = excluded.data, updated_at = now()`,
+      [JSON.stringify(c)],
+    );
   }
 }

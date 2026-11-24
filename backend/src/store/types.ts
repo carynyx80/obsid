@@ -1,5 +1,6 @@
 import type {
   ApplicationRecord,
+  ContractRegistry,
   HostRecord,
   NonceRecord,
   ProfileChangeRecord,
@@ -40,6 +41,11 @@ export interface Store {
   getProfileChange(id: string): Promise<ProfileChangeRecord | null>;
   listProfileChanges(f?: { status?: ReviewStatus; hostId?: string }): Promise<ProfileChangeRecord[]>;
   updateProfileChange(p: ProfileChangeRecord): Promise<void>;
+
+  /** Contract address registry (singleton). Returns {} when unset. */
+  getContracts(): Promise<ContractRegistry>;
+  /** Replaces the whole registry. */
+  setContracts(c: ContractRegistry): Promise<void>;
 }
 
 export class ConflictError extends Error {

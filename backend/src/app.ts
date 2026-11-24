@@ -23,7 +23,7 @@ export function createApp(store: Store, config: Config): Express {
   app.use(
     cors({
       origin: (origin, cb) => cb(null, !origin || config.corsOrigins.includes(origin.replace(/\/+$/, ''))),
-      methods: ['GET', 'POST', 'PATCH', 'OPTIONS'],
+      methods: ['GET', 'POST', 'PATCH', 'PUT', 'OPTIONS'],
       allowedHeaders: ['content-type', 'x-address', 'x-signature', 'x-nonce'],
       maxAge: 600,
     }),

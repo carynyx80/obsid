@@ -10,6 +10,9 @@ import Countdown from '@/components/core/Countdown';
 import Reveal from '@/components/core/Reveal';
 import { countdownLabel, countdownTarget, fmt, statusCls, statusLabel, typeLabel } from '@/components/core/format';
 import { saleAddress } from '@/components/core/contracts';
+import { useSaleChain } from '@/components/core/useSaleChain';
+import { addressUrl, pricePerWholeToken } from '@/lib/chain';
+import { formatEther, formatUnits } from 'viem';
 import { fetchHosts, fetchSales } from '@/lib/api';
 import type { Host, Sale } from '@/lib/types';
 
@@ -18,6 +21,7 @@ const d = (s: string) => new Date(s).toLocaleString('en-US', { month: 'short', d
 export default function SalePage({ params }: { params: { id: string } }) {
   const [sale, setSale] = useState<Sale | null | undefined>(undefined);
   const [host, setHost] = useState<Host | undefined>();
+  const chain = useSaleChain(sale ? saleAddress(sale) : null);
   useEffect(() => {
     Promise.all([fetchSales(), fetchHosts()]).then(([ss, hs]) => {
       const s = ss.find((x) => x.id === params.id) ?? null;
@@ -37,8 +41,15 @@ export default function SalePage({ params }: { params: { id: string } }) {
   );
 
   const target = countdownTarget(sale);
-  const pct = Math.min(100, (sale.totalCommittedBnb / sale.hardCapBnb) * 100);
   const addr = saleAddress(sale);
+  const live = !!chain?.loaded;
+  // Live onchain aggregates (public by design: deposits and bid counts are visible onchain).
+  const committed = live ? Number(formatEther(chain!.state === 'Succeeded' ? chain!.totalDeposits + chain!.raised : chain!.totalDeposits)) : sale.totalCommittedBnb;
+  const bidCount = live ? chain!.numBidders : sale.bidCount;
+  const pct = Math.min(100, (committed / sale.hardCapBnb) * 100);
+  const bnbP = (w: bigint) => { const n = Number(formatEther(w)); return n < 0.0001 ? n.toPrecision(4) : n.toLocaleString('en-US', { maximumFractionDigits: 8 }); };
+  const phaseLabel = live ? ({ soon: 'Not open yet', commit: 'Commit phase', reveal: 'Reveal phase', finalize: 'Awaiting finalize', done: chain!.state === 'Succeeded' ? 'Finalized' : 'Failed or cancelled' } as const)[chain!.phase] : null;
+  const clearing = live && chain!.state === 'Succeeded' ? `${bnbP(pricePerWholeToken(chain!.clearingPrice, chain!.decimals))} BNB` : sale.clearingPrice ? `${sale.clearingPrice} BNB` : null;
   const listHref = sale.type === 'PRESALE' ? '/app/presale' : sale.type === 'IDO' ? '/app/ido' : sale.type === 'IPO' ? '/app/ipo' : '/app/ico';
   const terms: [string, string][] = [
     ['Supply for sale', `${fmt(sale.supply, 0)} ${sale.tokenSymbol}`],
@@ -72,9 +83,11 @@ export default function SalePage({ params }: { params: { id: string } }) {
               <div className="relative mt-8 flex flex-wrap items-end justify-between gap-4">
                 <div>
                   <p className="font-label text-[10px] font-bold uppercase tracking-[0.2em] text-ink/60">{countdownLabel(sale)}</p>
-                  {target ? <Countdown to={target} big /> : <p className="font-mono text-3xl">{sale.clearingPrice ? `${sale.clearingPrice} BNB` : 'Final'}</p>}
+                  {target ? <Countdown to={target} big /> : <p className="font-mono text-3xl">{clearing ?? 'Final'}</p>}
                 </div>
-                <span className="font-mono text-[11px] text-ink/60">{addr ? `${addr.slice(0, 8)}…${addr.slice(-6)}` : 'Contract deploys at launch'}</span>
+                {addr ? (
+                  <a href={addressUrl(addr)} target="_blank" rel="noreferrer" className="font-mono text-[11px] text-ink/60 underline decoration-ink/20 underline-offset-4 hover:text-ink">{addr.slice(0, 8)}…{addr.slice(-6)}</a>
+                ) : <span className="font-mono text-[11px] text-ink/60">Contract deploys at launch</span>}
               </div>
             </motion.div>
 
@@ -95,12 +108,19 @@ export default function SalePage({ params }: { params: { id: string } }) {
             <Reveal className="grid gap-4 sm:grid-cols-2">
               <div className="rounded-[2rem] bg-ink p-6 text-paper">
                 <p className="font-label text-[10px] font-bold uppercase tracking-[0.2em] text-lemon">Total committed</p>
-                <p className="mt-2 font-mono text-4xl">{fmt(sale.totalCommittedBnb, 2)}</p>
-                <p className="font-mono text-xs text-paper/50">BNB of {fmt(sale.hardCapBnb, 0)} hard cap</p>
+                <p className="mt-2 font-mono text-4xl">{fmt(committed, 2)}</p>
+                <p className="font-mono text-xs text-paper/50">BNB {live ? 'in deposits ' : ''}of {fmt(sale.hardCapBnb, 0)} hard cap</p>
                 <div className="mt-4 h-2 overflow-hidden rounded-full bg-paper/10">
                   <motion.div initial={{ width: 0 }} whileInView={{ width: `${pct}%` }} viewport={{ once: true }} transition={{ duration: 1.2, ease: [0.22, 1, 0.36, 1] }} className="h-full rounded-full bg-lemon" />
                 </div>
-                <p className="mt-4 font-mono text-sm">{fmt(sale.bidCount, 0)} <span className="font-body text-paper/60">sealed bids</span></p>
+                <p className="mt-4 font-mono text-sm">{fmt(bidCount, 0)} <span className="font-body text-paper/60">sealed bids</span>{live && <> · {fmt(chain!.numRevealed, 0)} <span className="font-body text-paper/60">revealed</span></>}</p>
+                {live && (
+                  <div className="mt-4 space-y-1 border-t border-paper/10 pt-4 font-mono text-xs text-paper/70">
+                    <p><span className="font-label uppercase tracking-[0.2em] text-lemon">Live</span> · {phaseLabel}{chain!.paused ? ' · paused' : ''}{!chain!.funded && chain!.state === 'Pending' ? ' · awaiting token funding' : ''}</p>
+                    <p>{chain!.numTicks} price ticks · {bnbP(pricePerWholeToken(chain!.minPrice, chain!.decimals))} to {bnbP(pricePerWholeToken(chain!.minPrice + BigInt(Math.max(0, chain!.numTicks - 1)) * chain!.tickSize, chain!.decimals))} BNB</p>
+                    {clearing && <p>Clearing price {clearing} at tick {chain!.clearingTick} · {fmt(Number(formatUnits(chain!.totalSold, chain!.decimals)), 0)} {sale.tokenSymbol} sold</p>}
+                  </div>
+                )}
               </div>
               <div className="rounded-[2rem] bg-chalk p-6">
                 <HeatGauge heat={sale.heat} />

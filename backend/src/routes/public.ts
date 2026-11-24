@@ -5,9 +5,16 @@ import type { Store } from '../store/types.js';
 import type { SaleRecord } from '../types.js';
 import { salesQuery } from '../validation.js';
 
+export const CHAIN_ID = 56;
+
 /** Public, unauthenticated read endpoints. */
 export function publicRouter(store: Store): Router {
   const r = Router();
+
+  /** Contract address registry for the frontend. Empty object until the admin saves addresses. */
+  r.get('/config', async (_req, res) => {
+    res.set('cache-control', 'no-store').json({ chainId: CHAIN_ID, contracts: await store.getContracts() });
+  });
 
   r.get('/hosts', async (_req, res) => {
     const [hosts, sales] = await Promise.all([store.listHosts(), store.listSales()]);

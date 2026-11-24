@@ -1,4 +1,4 @@
-import type { ApplicationRecord, HostRecord, NonceRecord, ProfileChangeRecord, SaleRecord } from '../types.js';
+import type { ApplicationRecord, ContractRegistry, HostRecord, NonceRecord, ProfileChangeRecord, SaleRecord } from '../types.js';
 import { ConflictError, type Store } from './types.js';
 
 const clone = <T>(v: T): T => structuredClone(v);
@@ -12,6 +12,7 @@ export class MemoryStore implements Store {
   private applications = new Map<string, ApplicationRecord>();
   private sales = new Map<string, SaleRecord>();
   private changes = new Map<string, ProfileChangeRecord>();
+  private contracts: ContractRegistry = {};
 
   async init() {}
   async close() {}
@@ -112,5 +113,12 @@ export class MemoryStore implements Store {
   }
   async updateProfileChange(p: ProfileChangeRecord) {
     this.changes.set(p.id, clone(p));
+  }
+
+  async getContracts() {
+    return clone(this.contracts);
+  }
+  async setContracts(c: ContractRegistry) {
+    this.contracts = clone(c);
   }
 }

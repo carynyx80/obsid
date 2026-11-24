@@ -109,3 +109,17 @@ export interface NonceRecord {
   address: string;
   expiresAt: Date;
 }
+
+/** Names of deployed Obsid contracts tracked in the address registry. */
+export const CONTRACT_NAMES = [
+  'SaleFactory',
+  'SealedBidSaleImpl',
+  'MilestoneEscrowImpl',
+  'VestingVault',
+  'ParticipationBadge',
+  'AllocationMarket',
+  'LiquidityLocker',
+] as const;
+export type ContractName = (typeof CONTRACT_NAMES)[number];
+/** EIP-55 checksummed addresses keyed by contract name. Missing keys are unset. */
+export type ContractRegistry = Partial<Record<ContractName, string>>;

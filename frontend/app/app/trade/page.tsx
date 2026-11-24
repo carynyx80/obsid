@@ -1,18 +1,23 @@
 'use client';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useEffect, useState } from 'react';
-import { parseEther, parseUnits } from 'viem';
-import { useWriteContract } from 'wagmi';
+import { formatEther, formatUnits, parseEther, parseUnits, type Address } from 'viem';
+import { usePublicClient, useReadContract, useReadContracts, useWriteContract } from 'wagmi';
 import AppShell from '@/components/ui/AppShell';
 import Button from '@/components/ui/Button';
 import Redacted from '@/components/ui/Redacted';
 import { fetchSales } from '@/lib/api';
 import { useRole } from '@/lib/role';
 import type { Sale } from '@/lib/types';
-import { ALLOCATION_MARKET, marketAbi } from '@/components/hostbuyer/abis';
+import { ALLOCATION_MARKET_ABI, useContracts } from '@/components/hostbuyer/abis';
+import { saleAddress } from '@/components/core/contracts';
+import { useSaleDecimals } from '@/components/core/useSaleChain';
+import { CHAIN_ID, errMsg } from '@/lib/chain';
 import { DemoNote, Field, Input, Kicker, PageHead, Rise, Tag, cx, ease, fmt, short, useAuth } from '@/components/hostbuyer/kit';
 
-interface Listing { id: number; saleId: string; amount: number; askBnb: number; seller: string; mine?: boolean }
+interface Listing { id: number; saleId: string; amount: number; askBnb: number; seller: string; mine?: boolean; onchain?: { amount: bigint; price: bigint } }
+type ChainListing = { seller: Address; sale: Address; amount: bigint; price: bigint; active: boolean };
+const MAX_LISTINGS = 200;
 const LS = 'obsid.demo.listings';
 const seed: Listing[] = [
   { id: 1, saleId: 's4', amount: 1200, askBnb: 19.2, seller: '0x4a1E7b3C2d9F0e8A6b5C4d3E2f1A0b9C8d7E6f5a' },
@@ -30,6 +35,33 @@ export default function TradePage() {
   const [form, setForm] = useState({ saleId: '', amount: '', ask: '' });
   const [note, setNote] = useState('');
   const { writeContractAsync, isPending } = useWriteContract();
+  const publicClient = usePublicClient({ chainId: CHAIN_ID });
+  const market = useContracts().contracts.AllocationMarket;
+
+  // Live listings from AllocationMarket (newest MAX_LISTINGS).
+  const count = useReadContract({ address: market, abi: ALLOCATION_MARKET_ABI, functionName: 'listingCount', chainId: CHAIN_ID, query: { enabled: !!market, refetchInterval: 30_000 } });
+  const n = Number((count.data as bigint | undefined) ?? 0n);
+  const ids = Array.from({ length: Math.min(n, MAX_LISTINGS) }, (_, i) => n - 1 - i);
+  const rawListings = useReadContracts({
+    allowFailure: true,
+    contracts: market ? ids.map((id) => ({ address: market, abi: ALLOCATION_MARKET_ABI, functionName: 'getListing', args: [BigInt(id)], chainId: CHAIN_ID })) : [],
+    query: { enabled: !!market && n > 0, refetchInterval: 30_000 },
+  });
+  const chainRows = ids.map((id, i) => ({ id, l: rawListings.data?.[i]?.status === 'success' ? (rawListings.data[i].result as ChainListing) : undefined }))
+    .filter((x): x is { id: number; l: ChainListing } => !!x.l && x.l.active);
+  const listedSales = Array.from(new Set(chainRows.map((x) => x.l.sale.toLowerCase()))) as Address[];
+  const onchainSales = sales.filter((s) => saleAddress(s));
+  const decimals = useSaleDecimals(Array.from(new Set([...listedSales, ...onchainSales.map((s) => saleAddress(s)!.toLowerCase() as Address)])));
+  const saleByAddr = (a: string) => sales.find((s) => saleAddress(s)?.toLowerCase() === a.toLowerCase());
+  const liveList: Listing[] = chainRows.map(({ id, l }) => {
+    const d = decimals[l.sale.toLowerCase()] ?? 18;
+    return { id, saleId: saleByAddr(l.sale)?.id ?? l.sale, amount: Number(formatUnits(l.amount, d)), askBnb: Number(formatEther(l.price)), seller: l.seller, onchain: { amount: l.amount, price: l.price } };
+  });
+  const shown = market ? liveList : list;
+  useEffect(() => {
+    if (market && onchainSales.length && !onchainSales.some((x) => x.id === form.saleId)) setForm((f) => ({ ...f, saleId: onchainSales[0].id }));
+  }, [market, onchainSales.length, form.saleId]); // eslint-disable-line react-hooks/exhaustive-deps
+  const refresh = () => { setTimeout(() => { count.refetch(); rawListings.refetch(); }, 4000); };
 
   useEffect(() => {
     fetchSales().then((s) => { setSales(s); setForm((f) => ({ ...f, saleId: f.saleId || s.find((x) => x.status === 'settled')?.id || s[0]?.id || '' })); });
@@ -40,26 +72,37 @@ export default function TradePage() {
 
   async function tx(fn: () => Promise<`0x${string}`>, demo: () => void, done: string) {
     setNote('');
-    if (!ALLOCATION_MARKET) { demo(); setNote(`${done} (demo). Set NEXT_PUBLIC_ALLOCATION_MARKET to trade onchain.`); return; }
-    try { const h = await fn(); demo(); setNote(`${done}: ${short(h)}`); } catch (e) { setNote(e instanceof Error ? e.message.split('\n')[0].slice(0, 140) : 'Transaction failed'); }
+    if (!market) { demo(); setNote(`${done} (demo). Trading goes onchain once the AllocationMarket address is configured.`); return; }
+    try {
+      const h = await fn();
+      setNote(`${done}, waiting for confirmation: ${short(h)}`);
+      await publicClient?.waitForTransactionReceipt({ hash: h });
+      demo(); setNote(`${done}: ${short(h)}`); refresh();
+    } catch (e) { setNote(errMsg(e)); }
   }
 
   const create = () => {
     const amount = Number(form.amount), ask = Number(form.ask), s = saleOf(form.saleId);
     if (!s || !(amount > 0) || !(ask > 0)) return setNote('Fill every field');
+    const sa = saleAddress(s);
+    if (market && !sa) return setNote('This sale has no onchain contract yet.');
+    const d = sa ? decimals[sa.toLowerCase()] ?? 18 : 18;
+    let units: bigint, price: bigint;
+    try { units = parseUnits(form.amount, d); price = parseEther(form.ask); } catch { return setNote('Enter valid numbers'); }
     tx(
-      () => writeContractAsync({ address: ALLOCATION_MARKET!, abi: marketAbi, functionName: 'list', args: [s.tokenAddress as `0x${string}`, parseUnits(form.amount, 18), parseEther(form.ask)] }),
-      () => { persist([{ id: Date.now(), saleId: s.id, amount, askBnb: ask, seller: address ?? '0x0000000000000000000000000000000000000000', mine: true }, ...list]); setForm({ ...form, amount: '', ask: '' }); setOpen(false); },
+      // list(address sale, uint256 amount, uint256 price): sale = SealedBidSale clone, amount in token wei, price = total BNB wei
+      () => writeContractAsync({ address: market!, abi: ALLOCATION_MARKET_ABI, functionName: 'list', args: [sa!, units, price], chainId: CHAIN_ID }),
+      () => { if (!market) persist([{ id: Date.now(), saleId: s.id, amount, askBnb: ask, seller: address ?? '0x0000000000000000000000000000000000000000', mine: true }, ...list]); setForm({ ...form, amount: '', ask: '' }); setOpen(false); },
       'Listed',
     );
   };
   const buy = (l: Listing) => tx(
-    () => writeContractAsync({ address: ALLOCATION_MARKET!, abi: marketAbi, functionName: 'buy', args: [BigInt(l.id)], value: parseEther(String(l.askBnb)) }),
-    () => persist(list.filter((x) => x.id !== l.id)), 'Bought',
+    () => writeContractAsync({ address: market!, abi: ALLOCATION_MARKET_ABI, functionName: 'buy', args: [BigInt(l.id)], value: l.onchain?.price ?? parseEther(String(l.askBnb)), chainId: CHAIN_ID }),
+    () => { if (!market) persist(list.filter((x) => x.id !== l.id)); }, 'Bought',
   );
   const cancel = (l: Listing) => tx(
-    () => writeContractAsync({ address: ALLOCATION_MARKET!, abi: marketAbi, functionName: 'cancel', args: [BigInt(l.id)] }),
-    () => persist(list.filter((x) => x.id !== l.id)), 'Cancelled',
+    () => writeContractAsync({ address: market!, abi: ALLOCATION_MARKET_ABI, functionName: 'cancel', args: [BigInt(l.id)], chainId: CHAIN_ID }),
+    () => { if (!market) persist(list.filter((x) => x.id !== l.id)); }, 'Cancelled',
   );
 
   return (
@@ -83,7 +126,7 @@ export default function TradePage() {
               <div className="grid gap-5 rounded-blob bg-lemon p-6 md:grid-cols-4 md:items-end md:p-8">
                 <Field label="Sale">
                   <select value={form.saleId} onChange={(e) => setForm({ ...form, saleId: e.target.value })} className="w-full rounded-2xl border border-ink/15 bg-paper px-4 py-3 font-body text-[15px] outline-none focus:border-ink">
-                    {sales.map((s) => <option key={s.id} value={s.id}>{s.tokenName} ({s.tokenSymbol})</option>)}
+                    {(market ? onchainSales : sales).map((s) => <option key={s.id} value={s.id}>{s.tokenName} ({s.tokenSymbol})</option>)}
                   </select>
                 </Field>
                 <Field label="Tokens"><Input mono inputMode="decimal" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} placeholder="1000" /></Field>
@@ -102,7 +145,7 @@ export default function TradePage() {
         </div>
         <ul className="space-y-3 md:mt-3">
           <AnimatePresence initial={false}>
-            {list.map((l, i) => {
+            {shown.map((l, i) => {
               const s = saleOf(l.saleId);
               const mine = l.mine || (address && l.seller.toLowerCase() === address.toLowerCase());
               return (
@@ -124,7 +167,7 @@ export default function TradePage() {
             })}
           </AnimatePresence>
         </ul>
-        {list.length === 0 && <p className="mt-10 font-serif text-2xl italic text-ink-mute">The desk is empty. Be the first to list.</p>}
+        {shown.length === 0 && <p className="mt-10 font-serif text-2xl italic text-ink-mute">The desk is empty. Be the first to list.</p>}
       </div>
     </AppShell>
   );

@@ -12,9 +12,11 @@ import { ADMIN_WALLET } from '@/lib/wagmi';
 import {
   adminApplications, adminProfileChanges, approveApplication, decideProfileChange, rejectApplication, type Application, type ProfileChange,
 } from '@/components/hostbuyer/client';
+import { ContractsPanel, CreateOnchainSale, EscrowChainControls, SaleChainControls } from '@/components/hostbuyer/AdminChain';
+import { saleAddress } from '@/components/core/contracts';
 import { DemoNote, Gate, Input, Kicker, PageHead, StatusPill, Tag, cx, ease, fmt, fmtDate, short, useAuth } from '@/components/hostbuyer/kit';
 
-const TABS = ['Applications', 'Profile changes', 'Live sales', 'Escrow'] as const;
+const TABS = ['Applications', 'Profile changes', 'Live sales', 'Escrow', 'Contracts'] as const;
 type TabT = (typeof TABS)[number];
 
 export default function AdminPage() {
@@ -43,23 +45,30 @@ function Desk() {
   const [sales, setSales] = useState<Sale[]>([]);
   const [err, setErr] = useState('');
 
+  // Each backend request needs its own signed nonce (single use), so the two queues load separately.
   const load = useCallback(async () => {
     setErr('');
-    try { const a = await auth(); const [x, y] = await Promise.all([adminApplications(a), adminProfileChanges(a)]); setApps(x); setChanges(y); }
+    try { setApps(await adminApplications(await auth())); }
     catch (e) { setErr(e instanceof Error ? e.message.slice(0, 200) : 'Could not load'); }
   }, [auth]);
-  useEffect(() => { fetchSales().then(setSales); }, []);
+  const loadChanges = useCallback(async () => {
+    setErr('');
+    try { setChanges(await adminProfileChanges(await auth())); }
+    catch (e) { setErr(e instanceof Error ? e.message.slice(0, 200) : 'Could not load'); }
+  }, [auth]);
+  const reloadSales = useCallback(() => { fetchSales().then(setSales); }, []);
+  useEffect(() => { reloadSales(); }, [reloadSales]);
 
   const pendingApps = apps?.filter((a) => a.status === 'pending').length ?? 0;
   const pendingChanges = changes?.filter((c) => c.status === 'pending').length ?? 0;
   const counts: Record<TabT, number | undefined> = {
     Applications: apps ? pendingApps : undefined, 'Profile changes': changes ? pendingChanges : undefined,
-    'Live sales': sales.filter((s) => s.status === 'bidding' || s.status === 'reveal').length, Escrow: sales.filter((s) => s.status === 'settled').length,
+    'Live sales': sales.filter((s) => s.status === 'bidding' || s.status === 'reveal').length, Escrow: sales.filter((s) => s.status === 'settled' || saleAddress(s)).length, Contracts: undefined,
   };
 
   return (
     <>
-      <PageHead kicker="The desk" title={<>Admin<span className="text-lemon-deep">.</span></>} accent="approve with care, release with proof." aside={<Tag tone="ink">{short(ADMIN_WALLET)}</Tag>} />
+      <PageHead kicker="The desk" title={<>Admin<span className="text-lemon-deep">.</span></>} accent="approve with care, release with proof." aside={<div className="flex flex-wrap items-center gap-2"><Button href="/deploy" size="sm" variant="ghost">Deploy contracts</Button><Tag tone="ink">{short(ADMIN_WALLET)}</Tag></div>} />
       <DemoNote />
       <nav className="no-scrollbar -mx-4 mb-8 flex gap-2 overflow-x-auto px-4">
         {TABS.map((t) => (
@@ -73,28 +82,36 @@ function Desk() {
 
       <AnimatePresence mode="wait">
         <motion.div key={tab} initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} transition={{ duration: 0.35, ease }}>
-          {(tab === 'Applications' || tab === 'Profile changes') && apps === null && (
+          {tab === 'Applications' && apps === null && (
             <div className="rounded-blob border border-ink/10 p-10 text-center">
-              <p className="font-serif text-xl italic text-ink-soft">Sign once to open the review queue.</p>
+              <p className="font-serif text-xl italic text-ink-soft">Sign to open the review queue.</p>
               <div className="mt-6 flex justify-center"><Button variant="ink" onClick={load}>Sign in as admin</Button></div>
             </div>
           )}
-          {tab === 'Applications' && apps && <Applications apps={apps} onChange={load} />}
-          {tab === 'Profile changes' && changes && <Changes list={changes} onChange={load} />}
+          {tab === 'Profile changes' && changes === null && (
+            <div className="rounded-blob border border-ink/10 p-10 text-center">
+              <p className="font-serif text-xl italic text-ink-soft">Sign to open profile edits.</p>
+              <div className="mt-6 flex justify-center"><Button variant="ink" onClick={loadChanges}>Sign in as admin</Button></div>
+            </div>
+          )}
+          {tab === 'Applications' && apps && <Applications apps={apps} sales={sales} onChange={() => { load(); reloadSales(); }} onSales={reloadSales} />}
+          {tab === 'Profile changes' && changes && <Changes list={changes} onChange={loadChanges} />}
           {tab === 'Live sales' && <LiveSales sales={sales.filter((s) => s.status !== 'settled' && s.status !== 'failed')} />}
-          {tab === 'Escrow' && <Escrow sales={sales.filter((s) => s.status === 'settled')} />}
+          {tab === 'Escrow' && <Escrow sales={sales.filter((s) => s.status === 'settled' || saleAddress(s))} />}
+          {tab === 'Contracts' && <ContractsPanel />}
         </motion.div>
       </AnimatePresence>
     </>
   );
 }
 
-function Applications({ apps, onChange }: { apps: Application[]; onChange: () => void }) {
+function Applications({ apps, sales, onChange, onSales }: { apps: Application[]; sales: Sale[]; onChange: () => void; onSales: () => void }) {
   const { auth } = useAuth();
   const [openId, setOpenId] = useState<string | null>(null);
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
-  const act = async (fn: () => Promise<void>) => { setBusy(true); try { await fn(); setOpenId(null); setReason(''); onChange(); } catch {} setBusy(false); };
+  const [actErr, setActErr] = useState('');
+  const act = async (fn: () => Promise<unknown>) => { setBusy(true); setActErr(''); try { await fn(); setOpenId(null); setReason(''); onChange(); } catch (e) { setActErr(e instanceof Error ? e.message.slice(0, 200) : 'Action failed'); } setBusy(false); };
   if (!apps.length) return <p className="font-serif text-2xl italic text-ink-mute">Queue is clear.</p>;
   return (
     <div className="grid gap-4 xl:grid-cols-2">
@@ -119,6 +136,12 @@ function Applications({ apps, onChange }: { apps: Application[]; onChange: () =>
             {a.milestones.map((m, i) => <span key={i} className="rounded-full bg-frost px-3 py-1 font-body text-xs">{m.label} <span className="font-mono">{m.pct}%</span></span>)}
           </div>
           {a.reason && <p className="mt-4 font-serif italic text-ink-soft">Reason: {a.reason}</p>}
+          {a.status === 'approved' && (() => {
+            const sale = sales.find((x) => x.id === a.saleId);
+            const addr = sale ? saleAddress(sale) : null;
+            if (addr) return <p className="mt-5 font-mono text-xs text-ink-mute">Onchain sale <a href={`https://bscscan.com/address/${addr}`} target="_blank" rel="noreferrer" className="underline">{short(addr)}</a></p>;
+            return <div className="mt-6"><CreateOnchainSale app={a} saleId={a.saleId} onDone={onSales} /></div>;
+          })()}
           {a.status === 'pending' && (
             <div className="mt-6">
               <AnimatePresence>
@@ -136,6 +159,8 @@ function Applications({ apps, onChange }: { apps: Application[]; onChange: () =>
                   <Button variant="ghost" size="sm" onClick={() => setOpenId(a.id)}>Reject</Button>
                 )}
               </div>
+              <p className="mt-3 font-body text-xs text-ink-mute">After approval you can create the onchain sale from this card.</p>
+              {actErr && <p className="mt-2 font-body text-sm text-red-700">{actErr}</p>}
             </div>
           )}
         </motion.article>
@@ -151,7 +176,7 @@ function Changes({ list, onChange }: { list: ProfileChange[]; onChange: () => vo
   return (
     <ul className="divide-y divide-ink/10 border-y border-ink/10">
       {list.map((c) => (
-        <li key={c.id} className="grid items-center gap-4 py-5 md:grid-cols-12">
+        <li key={`${c.id}.${c.field}`} className="grid items-center gap-4 py-5 md:grid-cols-12">
           <div className="md:col-span-3">
             <Kicker>{c.field}</Kicker>
             <p className="font-mono text-xs text-ink-mute">{short(c.hostAddress)} · {fmtDate(c.createdAt)}</p>
@@ -190,8 +215,12 @@ function LiveSales({ sales }: { sales: Sale[] }) {
             <HeatGauge heat={s.heat} compact />
           </div>
           <p className="mt-4 font-mono text-sm">{fmt(s.totalCommittedBnb, 1)} / {fmt(s.hardCapBnb, 0)} BNB · {fmt(s.bidCount, 0)} bids</p>
-          <div className="mt-5"><Button size="sm" variant={paused[s.id] ? 'lemon' : 'ink'} onClick={() => setPaused((p) => ({ ...p, [s.id]: !p[s.id] }))}>{paused[s.id] ? 'Resume' : 'Pause sale'}</Button></div>
-          <p className="mt-2 font-label text-[9px] uppercase tracking-[0.2em] text-ink-mute">placeholder · wire to SealedSale.pause</p>
+          {saleAddress(s) ? <SaleChainControls sale={s} /> : (
+            <>
+              <div className="mt-5"><Button size="sm" variant={paused[s.id] ? 'lemon' : 'ink'} onClick={() => setPaused((p) => ({ ...p, [s.id]: !p[s.id] }))}>{paused[s.id] ? 'Resume' : 'Pause sale'}</Button></div>
+              <p className="mt-2 font-label text-[9px] uppercase tracking-[0.2em] text-ink-mute">demo only · no onchain contract for this sale</p>
+            </>
+          )}
         </div>
       ))}
     </div>
@@ -211,6 +240,7 @@ function Escrow({ sales }: { sales: Sale[] }) {
               <h3 className="font-display text-3xl font-semibold">{s.tokenName}</h3>
               <p className="font-mono text-sm">{fmt(raised, 1)} BNB raised · {s.escrow.atClosePct}% released at close</p>
             </div>
+            {saleAddress(s) ? <EscrowChainControls sale={s} /> : <>
             <div className="mt-6 grid gap-3 md:grid-cols-2">
               {s.escrow.milestones.map((m, i) => {
                 const key = `${s.id}.${i}`;
@@ -226,7 +256,8 @@ function Escrow({ sales }: { sales: Sale[] }) {
                 );
               })}
             </div>
-            <p className="mt-3 font-label text-[9px] uppercase tracking-[0.2em] text-ink-mute">placeholder · wire to Escrow.releaseMilestone</p>
+            <p className="mt-3 font-label text-[9px] uppercase tracking-[0.2em] text-ink-mute">demo only · no onchain contract for this sale</p>
+            </>}
           </div>
         );
       })}
